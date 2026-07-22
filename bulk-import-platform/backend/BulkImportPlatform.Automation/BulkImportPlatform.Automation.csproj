@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Pinned to the same version already validated against the live site by the IrentoQA
+         project this automation was ported from - not picked blind. -->
+    <PackageReference Include="Microsoft.Playwright" Version="1.59.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\BulkImportPlatform.Core\BulkImportPlatform.Core.csproj" />
+    <ProjectReference Include="..\BulkImportPlatform.Infrastructure\BulkImportPlatform.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>

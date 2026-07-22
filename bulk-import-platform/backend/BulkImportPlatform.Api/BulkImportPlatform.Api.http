@@ -1,0 +1,6 @@
+@BulkImportPlatform.Api_HostAddress = http://localhost:5022
+
+GET {{BulkImportPlatform.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

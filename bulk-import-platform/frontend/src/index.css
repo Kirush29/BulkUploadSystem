@@ -1,0 +1,8 @@
+body {
+  margin: 0;
+  font-family: "Inter", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
