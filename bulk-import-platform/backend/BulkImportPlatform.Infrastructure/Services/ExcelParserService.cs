@@ -13,11 +13,47 @@ public class ExcelParserService : IExcelParserService
     public ParsedSheet Parse(Stream fileStream, string fileName)
     {
         var extension = Path.GetExtension(fileName).ToLowerInvariant();
-        if (extension != ".xlsx" && extension != ".xlsm")
-        {
-            throw new InvalidDataException("File format is invalid. Only .xlsx/.xlsm Excel files are supported.");
-        }
 
+        if (extension == ".csv")
+            return ParseCsv(fileStream);
+
+        if (extension != ".xlsx" && extension != ".xlsm")
+            throw new InvalidDataException("File format is invalid. Only .xlsx, .xlsm, or .csv files are supported.");
+
+        return ParseExcel(fileStream);
+    }
+
+    private static ParsedSheet ParseCsv(Stream fileStream)
+    {
+        using var reader = new StreamReader(fileStream);
+        var firstLine = reader.ReadLine()
+            ?? throw new InvalidDataException("The uploaded CSV file is empty.");
+
+        var headers = firstLine.Split(',').Select(h => h.Trim().Trim('"')).Where(h => !string.IsNullOrWhiteSpace(h)).ToList();
+        if (headers.Count == 0)
+            throw new InvalidDataException("No column headers were detected in the first row of the CSV.");
+
+        var result = new ParsedSheet { Headers = headers };
+        string? line;
+        while ((line = reader.ReadLine()) != null)
+        {
+            if (string.IsNullOrWhiteSpace(line)) continue;
+            var values = line.Split(',').Select(v => v.Trim().Trim('"')).ToArray();
+            var rowDict = new Dictionary<string, string?>();
+            var isEmptyRow = true;
+            for (var i = 0; i < headers.Count; i++)
+            {
+                var value = i < values.Length ? values[i] : null;
+                if (!string.IsNullOrEmpty(value)) isEmptyRow = false;
+                rowDict[headers[i]] = string.IsNullOrEmpty(value) ? null : value;
+            }
+            if (!isEmptyRow) result.Rows.Add(rowDict);
+        }
+        return result;
+    }
+
+    private static ParsedSheet ParseExcel(Stream fileStream)
+    {
         XLWorkbook workbook;
         try
         {
@@ -42,41 +78,27 @@ public class ExcelParserService : IExcelParserService
             {
                 var header = cell.GetString().Trim();
                 if (!string.IsNullOrWhiteSpace(header))
-                {
                     headers.Add(header);
-                }
             }
 
             if (headers.Count == 0)
-            {
                 throw new InvalidDataException("No column headers were detected in the first row of the worksheet.");
-            }
 
             var result = new ParsedSheet { Headers = headers };
-
             var dataRows = usedRange.RowsUsed().Skip(1);
             foreach (var row in dataRows)
             {
                 var rowDict = new Dictionary<string, string?>();
                 var isEmptyRow = true;
-
                 for (var i = 0; i < headers.Count; i++)
                 {
                     var cell = row.Cell(i + 1);
                     var value = cell.IsEmpty() ? null : cell.GetString().Trim();
-                    if (!string.IsNullOrEmpty(value))
-                    {
-                        isEmptyRow = false;
-                    }
+                    if (!string.IsNullOrEmpty(value)) isEmptyRow = false;
                     rowDict[headers[i]] = string.IsNullOrEmpty(value) ? null : value;
                 }
-
-                if (!isEmptyRow)
-                {
-                    result.Rows.Add(rowDict);
-                }
+                if (!isEmptyRow) result.Rows.Add(rowDict);
             }
-
             return result;
         }
     }

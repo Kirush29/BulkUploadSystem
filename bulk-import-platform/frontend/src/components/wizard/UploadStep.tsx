@@ -51,9 +51,9 @@ export default function UploadStep({
 
   return (
     <Box>
-      <Typography variant="h6" gutterBottom>Step 1: Upload Excel File</Typography>
+      <Typography variant="h6" gutterBottom>Step 1: Upload File</Typography>
       <Typography color="text.secondary" sx={{ mb: 3 }}>
-        Pick which client this data belongs to, then upload a .xlsx spreadsheet containing {type} records.
+        Pick which client this data belongs to, then upload a .xlsx, .xlsm, or .csv file containing {type} records.
         The first row must contain column headers. Not sure of the expected columns? Download the template below.
         Duplicate checks (e.g. an existing Vehicle Number) are checked only against this client's own data -
         other clients may have the same values.
@@ -109,7 +109,7 @@ export default function UploadStep({
           ref={fileInputRef}
           type="file"
           hidden
-          accept=".xlsx,.xlsm"
+          accept=".xlsx,.xlsm,.csv"
           onChange={(e) => {
             const file = e.target.files?.[0];
             if (file) handleFile(file);
@@ -139,13 +139,13 @@ export default function UploadStep({
               <UploadFileIcon />
             </Box>
             <Typography variant="subtitle1">
-              Drag & drop your Excel file here
+              Drag & drop your Excel or CSV file here
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              or click to browse · .xlsx / .xlsm
+              or click to browse · .xlsx / .xlsm / .csv
             </Typography>
             <Button variant="contained" disabled={!canDrop} sx={{ mt: 1 }}>
-              Choose Excel File
+              Choose File
             </Button>
             {!clientAccountId && (
               <Typography variant="caption" color="text.secondary">
