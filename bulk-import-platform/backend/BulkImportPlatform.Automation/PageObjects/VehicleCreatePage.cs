@@ -54,6 +54,20 @@ public class VehicleCreatePage
 
     public Task SetModelAsync(string model) => DropdownSelector.SelectMuiAsync(_page, "modelId", model);
 
+    /// <summary>
+    /// Every make currently configured on this irentosoft account, read straight from the
+    /// Add-Asset form's Make dropdown - the same list SetMakeAsync will later match against,
+    /// so "exists" here means exactly "selectable when creating the vehicle".
+    /// </summary>
+    public Task<List<string>> ReadMakesAsync() => DropdownSelector.ReadMuiOptionsAsync(_page, "makeId");
+
+    /// <summary>Models configured under <paramref name="make"/> (the Model list is filtered by the selected make).</summary>
+    public async Task<List<string>> ReadModelsForMakeAsync(string make)
+    {
+        await SetMakeAsync(make);
+        return await DropdownSelector.ReadMuiOptionsAsync(_page, "modelId");
+    }
+
     public Task SetVehicleTypeAsync(string vehicleType) => DropdownSelector.SelectMuiAsync(_page, "vehicleTypeId", vehicleType);
 
     public Task SetLicenseNumberAsync(string licenseNo) => _page.FillAsync("input[name='licenseNo']", licenseNo);

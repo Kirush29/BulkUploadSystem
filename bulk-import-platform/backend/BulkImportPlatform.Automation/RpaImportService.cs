@@ -152,6 +152,11 @@ public class RpaImportService : IRpaImportService
                 return;
             }
 
+            if (job.ImportType == ImportType.Vehicle && options.CreateMissingMakesAndModels)
+            {
+                await EnsureMakesAndModelsAsync(session.Page, job.Id, eligible, performedBy);
+            }
+
             int succeeded = 0, failed = 0;
             foreach (var record in eligible)
             {
@@ -177,6 +182,118 @@ public class RpaImportService : IRpaImportService
             accountLock.Release();
         }
     }
+
+    /// <summary>
+    /// Adds every Make, and every Make+Model pair, used by <paramref name="records"/> that the
+    /// account's irentosoft catalog doesn't already have - once per run, before any vehicle is
+    /// entered, so the per-vehicle dropdowns then just find them.
+    ///
+    /// Duplicate safety: "already exists" is decided against the live Add-Asset dropdown lists
+    /// (trimmed, case-insensitive), the batch's own values are de-duplicated the same way, and
+    /// the per-account lock held by the caller rules out a concurrent run adding the same entry.
+    /// Each create is re-read from the dropdown afterwards; a failure is logged and only
+    /// affects the rows that need that make/model (they fail at the dropdown, as before).
+    /// </summary>
+    private async Task EnsureMakesAndModelsAsync(IPage page, int importJobId, List<ImportRecord> records, string performedBy)
+    {
+        var wanted = new Dictionary<string, (string Make, HashSet<string> Models)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var record in records)
+        {
+            var row = JsonSerializer.Deserialize<Dictionary<string, string?>>(record.MappedDataJson, JsonOptions) ?? new();
+            var make = Get(row, "Make")?.Trim();
+            if (string.IsNullOrWhiteSpace(make)) continue;
+
+            if (!wanted.TryGetValue(make, out var entry))
+            {
+                entry = (make, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+                wanted[make] = entry;
+            }
+            var model = Get(row, "Model")?.Trim();
+            if (!string.IsNullOrWhiteSpace(model)) entry.Models.Add(model);
+        }
+        if (wanted.Count == 0) return;
+
+        var vehiclePage = new VehicleCreatePage(page);
+        var settingsPage = new AssetCatalogSettingsPage(page);
+        var createdMakes = new List<string>();
+        var createdModels = new List<string>();
+        var problems = new List<string>();
+
+        try
+        {
+            await vehiclePage.NavigateAsync();
+            var existingMakes = ToLookupSet(await vehiclePage.ReadMakesAsync());
+
+            foreach (var (make, _) in wanted.Values)
+            {
+                if (existingMakes.Contains(make)) continue;
+                try
+                {
+                    await settingsPage.CreateMakeAsync(make);
+                    createdMakes.Add(make);
+                }
+                catch (Exception ex)
+                {
+                    problems.Add($"Make '{make}': {ex.Message}");
+                }
+            }
+
+            if (createdMakes.Count > 0)
+            {
+                await vehiclePage.NavigateAsync();
+                existingMakes = ToLookupSet(await vehiclePage.ReadMakesAsync());
+                foreach (var make in createdMakes.Where(m => !existingMakes.Contains(m)))
+                    problems.Add($"Make '{make}': saved, but it does not appear in the Add-Asset Make list.");
+            }
+
+            foreach (var (make, models) in wanted.Values)
+            {
+                if (models.Count == 0 || !existingMakes.Contains(make)) continue;
+
+                await vehiclePage.NavigateAsync();
+                var existingModels = ToLookupSet(await vehiclePage.ReadModelsForMakeAsync(make));
+                var missing = models.Where(m => !existingModels.Contains(m)).ToList();
+                if (missing.Count == 0) continue;
+
+                var createdForMake = new List<string>();
+                foreach (var model in missing)
+                {
+                    try
+                    {
+                        await settingsPage.CreateModelAsync(make, model);
+                        createdForMake.Add(model);
+                    }
+                    catch (Exception ex)
+                    {
+                        problems.Add($"Model '{make} {model}': {ex.Message}");
+                    }
+                }
+
+                if (createdForMake.Count == 0) continue;
+                await vehiclePage.NavigateAsync();
+                existingModels = ToLookupSet(await vehiclePage.ReadModelsForMakeAsync(make));
+                foreach (var model in createdForMake)
+                {
+                    if (existingModels.Contains(model)) createdModels.Add($"{make} {model}");
+                    else problems.Add($"Model '{make} {model}': saved, but it does not appear in the Add-Asset Model list.");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // Never let the catalog step abort the push itself - rows whose make/model is
+            // still missing will fail individually with the usual dropdown message.
+            problems.Add($"Make/model sync stopped early: {ex.Message}");
+        }
+
+        var details = $"Makes added: {(createdMakes.Count > 0 ? string.Join(", ", createdMakes) : "none")}. " +
+                      $"Models added: {(createdModels.Count > 0 ? string.Join(", ", createdModels) : "none")}.";
+        if (problems.Count > 0) details += " Problems: " + string.Join(" | ", problems);
+        await LogAsync(importJobId, "RPA_CATALOG_SYNC", performedBy, details);
+    }
+
+    private static HashSet<string> ToLookupSet(IEnumerable<string> values) =>
+        new(values.Select(v => v.Trim()), StringComparer.OrdinalIgnoreCase);
 
     private async Task<bool> ProcessVehicleAsync(IPage page, Dictionary<string, string?> row, string? owningLocation, string? currentLocation, ImportRecord record, string performedBy, RpaRunOptionsDto options)
     {

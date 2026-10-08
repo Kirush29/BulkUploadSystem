@@ -14,6 +14,7 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
+  DialogContentText,
 } from "@mui/material";
 import { DataGrid, type GridColDef } from "@mui/x-data-grid";
 import { useSnackbar } from "notistack";
@@ -39,17 +40,30 @@ export default function RpaStep({
   const [busy, setBusy] = useState(false);
   const [editTarget, setEditTarget] = useState<RpaRecordResultDto | null>(null);
   const [editValues, setEditValues] = useState<Record<string, string | null>>({});
+  // Asked once per push (vehicle imports only) and reused for Retry / Edit & Retry, so a
+  // retried row gets the same make/model handling as the run it came from.
+  const [askNewAccount, setAskNewAccount] = useState(false);
+  const [createMissingMakesAndModels, setCreateMissingMakesAndModels] = useState(false);
+  const rpaOptions = { createMissingMakesAndModels };
 
   useEffect(() => {
     RpaApi.status(importJobId).then(setSummary).catch(() => {});
   }, [importJobId]);
 
-  const handleRun = async () => {
+  const handlePushClick = () => {
+    if (type === "vehicle") setAskNewAccount(true);
+    else handleRun(false);
+  };
+
+  const handleRun = async (createMissing: boolean) => {
+    setAskNewAccount(false);
+    setCreateMissingMakesAndModels(createMissing);
     setBusy(true);
     try {
       const result = await RpaApi.run(importJobId, {
         owningLocation: type === "vehicle" ? owningLocation : undefined,
         currentLocation: type === "vehicle" ? currentLocation : undefined,
+        options: { createMissingMakesAndModels: createMissing },
       });
       setSummary(result);
       enqueueSnackbar(
@@ -66,7 +80,7 @@ export default function RpaStep({
   const handleRetry = async (importRecordId: number) => {
     setBusy(true);
     try {
-      const result = await RpaApi.retry(importJobId, { importRecordIds: [importRecordId] });
+      const result = await RpaApi.retry(importJobId, { importRecordIds: [importRecordId], options: rpaOptions });
       setSummary(result);
     } catch (e) {
       enqueueSnackbar(extractError(e), { variant: "error" });
@@ -86,6 +100,7 @@ export default function RpaStep({
     try {
       const result = await RpaApi.updateRecordAndRetry(importJobId, editTarget.importRecordId, {
         fieldUpdates: editValues,
+        options: rpaOptions,
       });
       setSummary(result);
       setEditTarget(null);
@@ -181,7 +196,7 @@ export default function RpaStep({
 
         <Button
           variant="contained"
-          onClick={handleRun}
+          onClick={handlePushClick}
           disabled={busy}
           startIcon={busy ? <CircularProgress size={18} color="inherit" /> : undefined}
         >
@@ -218,6 +233,29 @@ export default function RpaStep({
       )}
 
       <Button variant="outlined" onClick={onStartNew}>Start New Import</Button>
+
+      <Dialog open={askNewAccount} onClose={() => setAskNewAccount(false)} fullWidth maxWidth="sm">
+        <DialogTitle>Is this a new irentosoft account?</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            For a new account, any vehicle <strong>Make</strong> or <strong>Model</strong> in this
+            file that <strong>{clientAccountName}</strong> doesn't have yet is added first, under
+            Settings &rarr; Asset &rarr; Asset Make / Asset Model. Makes and models that already
+            exist are never added again.
+          </DialogContentText>
+          <DialogContentText sx={{ mt: 2 }}>
+            For an existing account, vehicles whose make or model isn't set up will fail and can
+            be corrected with Edit &amp; Retry.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setAskNewAccount(false)}>Cancel</Button>
+          <Button onClick={() => handleRun(false)}>No, existing account</Button>
+          <Button variant="contained" onClick={() => handleRun(true)}>
+            Yes, add missing makes &amp; models
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Dialog open={!!editTarget} onClose={() => setEditTarget(null)} fullWidth maxWidth="sm">
         <DialogTitle>Correct Row {editTarget?.rowNumber} and Retry</DialogTitle>

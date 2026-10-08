@@ -63,6 +63,16 @@ public static class DropdownSelector
             throw new DropdownOptionNotFoundException(fieldName, text);
         }
 
+        // Prefer an exact (case-insensitive) match so e.g. "Ford" picks "Ford" rather than
+        // whichever of "Ford" / "Ford Trucks" happens to render first; fall back to the
+        // original substring match so existing mappings keep working.
+        var exact = options.Filter(new() { HasTextRegex = ExactTextRegex(text) });
+        if (await exact.CountAsync() > 0)
+        {
+            await exact.First.ClickAsync();
+            return;
+        }
+
         var match = page.Locator($"[role='option']:has-text('{text}')");
         if (await match.CountAsync() == 0)
         {
@@ -71,4 +81,47 @@ public static class DropdownSelector
 
         await match.First.ClickAsync();
     }
+
+    /// <summary>
+    /// Opens a MUI Select, returns the text of every option it lists, then closes it again
+    /// without choosing anything. An empty list (e.g. a make with no models yet) is a valid
+    /// result, not an error - the menu simply never renders any role="option" rows.
+    /// </summary>
+    public static async Task<List<string>> ReadMuiOptionsAsync(IPage page, string muiComponentName, int timeoutMs = 5000)
+    {
+        var trigger = page.Locator($"[id='mui-component-select-{muiComponentName}']");
+        await trigger.ScrollIntoViewIfNeededAsync();
+        await trigger.ClickAsync();
+
+        var options = page.Locator("[role='option']");
+        try
+        {
+            await options.First.WaitForAsync(new() { Timeout = timeoutMs });
+        }
+        catch (TimeoutException)
+        {
+            await page.Keyboard.PressAsync("Escape");
+            return new List<string>();
+        }
+
+        var texts = (await options.AllInnerTextsAsync())
+            .Select(t => t.Trim())
+            .Where(t => t.Length > 0)
+            .ToList();
+
+        await page.Keyboard.PressAsync("Escape");
+        try
+        {
+            await options.First.WaitForAsync(new() { State = WaitForSelectorState.Detached, Timeout = timeoutMs });
+        }
+        catch (TimeoutException)
+        {
+            // Menu close animation lingering is harmless - the next dropdown click reopens its own.
+        }
+        return texts;
+    }
+
+    private static System.Text.RegularExpressions.Regex ExactTextRegex(string text) =>
+        new($"^\\s*{System.Text.RegularExpressions.Regex.Escape(text.Trim())}\\s*$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 }

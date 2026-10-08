@@ -180,6 +180,11 @@ public class RpaRunOptionsDto
 {
     public bool Headed { get; set; } = false;
     public bool CaptureScreenshotsOnFailure { get; set; } = true;
+    // Vehicle pushes only: before entering any vehicle, add every Make/Model the batch uses
+    // that the client's irentosoft account doesn't have yet (Settings > Asset > Asset Make /
+    // Asset Model). Opt-in - intended for new accounts with an empty catalog. Existing entries
+    // are never re-added (case-insensitive match against the live dropdown lists).
+    public bool CreateMissingMakesAndModels { get; set; } = false;
 }
 
 public class RpaRunSummaryDto

@@ -143,6 +143,9 @@ export type RpaStatus = "NotAttempted" | "InProgress" | "Succeeded" | "Failed" |
 export interface RpaRunOptionsDto {
   headed?: boolean;
   captureScreenshotsOnFailure?: boolean;
+  // Vehicle pushes only: add Makes/Models missing from the irentosoft account before entering
+  // vehicles (never re-adds an existing one).
+  createMissingMakesAndModels?: boolean;
 }
 
 export interface RpaRunRequestDto {

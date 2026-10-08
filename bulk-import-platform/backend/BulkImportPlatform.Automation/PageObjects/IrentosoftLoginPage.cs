@@ -31,8 +31,9 @@ public class IrentosoftLoginPage
     {
         await _page.GotoAsync("https://live.irentosoft.com/");
 
-        var usernameField = _page.Locator("input[name='username'], input[type='email']").First;
-        var passwordField = _page.Locator("input[type='password']").First;
+        // name='userName' / 'userPassword' confirmed on the live login page.
+        var usernameField = _page.Locator("input[name='userName'], input[name='username'], input[type='email']").First;
+        var passwordField = _page.Locator("input[name='userPassword'], input[type='password']").First;
 
         if (await usernameField.CountAsync() == 0 || await passwordField.CountAsync() == 0)
         {
