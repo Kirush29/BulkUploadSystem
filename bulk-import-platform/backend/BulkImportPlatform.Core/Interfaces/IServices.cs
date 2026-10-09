@@ -57,7 +57,15 @@ public interface IValidationEngine
         Dictionary<string, string?> mappedRow,
         ImportType type,
         Dictionary<string, int> vehicleNumberCountsInFile,
-        HashSet<string> existingVehicleNumbers);
+        HashSet<string> existingVehicleNumbers,
+        Dictionary<string, int> unpushedVehicleNumbers);
+
+    /// <param name="reservationNumberCountsInFile">Occurrences of each (upper-cased) ReservationNumber in the file.</param>
+    /// <param name="pushedReservationNumbers">ReservationNumber -> job id, for numbers this client account already has in irentosoft via an earlier import.</param>
+    List<ValidationResultDto> ValidateReservation(
+        Dictionary<string, string?> mappedRow,
+        Dictionary<string, int> reservationNumberCountsInFile,
+        Dictionary<string, int> pushedReservationNumbers);
 }
 
 /// <summary>
@@ -108,8 +116,10 @@ public interface IClientAccountService
 }
 
 /// <summary>
-/// Drives irentosoft's own web forms (no API exists) to enter Vehicle/Customer records
-/// for a specific client login, using data already committed locally by IImportService.
+/// Drives irentosoft's own web forms to enter Vehicle/Customer records for a specific client
+/// login, using data already committed locally by IImportService. Reservations instead go
+/// through irentosoft's internal booking API (authenticated by the same browser login), which
+/// is many times faster than form filling.
 /// Runs as a distinct step after CommitImportAsync - never folded into it - since browser
 /// automation against a separate live production system is slow and can fail independently
 /// of the fast, local, already-reliable DB commit.

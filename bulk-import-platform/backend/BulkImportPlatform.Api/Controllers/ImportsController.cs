@@ -30,7 +30,8 @@ public class ImportsController : ControllerBase
     {
         "vehicle" or "vehicles" => ImportType.Vehicle,
         "customer" or "customers" => ImportType.Customer,
-        _ => throw new ArgumentException($"Unknown import type '{type}'. Use 'vehicle' or 'customer'.")
+        "reservation" or "reservations" => ImportType.Reservation,
+        _ => throw new ArgumentException($"Unknown import type '{type}'. Use 'vehicle', 'customer' or 'reservation'.")
     };
 
     // Step 1-2: Upload Excel File / Parse Spreadsheet Data

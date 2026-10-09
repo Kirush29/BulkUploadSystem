@@ -163,7 +163,7 @@ export default function UploadStep({
         target="_blank"
         sx={{ mt: 2 }}
       >
-        Download {type === "vehicle" ? "Vehicle" : "Customer"} Template
+        Download {type.charAt(0).toUpperCase() + type.slice(1)} Template
       </Button>
 
       <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1, color: "text.secondary" }}>

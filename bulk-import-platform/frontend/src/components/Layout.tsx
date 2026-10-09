@@ -21,6 +21,7 @@ import HistoryIcon from "@mui/icons-material/HistoryRounded";
 import FactCheckIcon from "@mui/icons-material/FactCheckRounded";
 import MenuIcon from "@mui/icons-material/MenuRounded";
 import BadgeIcon from "@mui/icons-material/BadgeRounded";
+import EventIcon from "@mui/icons-material/EventAvailableRounded";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 
 const drawerWidth = 256;
@@ -29,6 +30,7 @@ const navItems = [
   { label: "Dashboard", path: "/", icon: <DashboardIcon /> },
   { label: "Vehicle Import", path: "/vehicle", icon: <DirectionsCarIcon /> },
   { label: "Customer Import", path: "/customer", icon: <PeopleIcon /> },
+  { label: "Reservation Import", path: "/reservation", icon: <EventIcon /> },
   { label: "Upload History", path: "/history", icon: <HistoryIcon /> },
   { label: "Audit Log", path: "/audit", icon: <FactCheckIcon /> },
   { label: "Client Accounts", path: "/client-accounts", icon: <BadgeIcon /> },

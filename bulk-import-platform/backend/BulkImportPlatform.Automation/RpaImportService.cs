@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using BulkImportPlatform.Automation.Api;
 using BulkImportPlatform.Automation.PageObjects;
 using BulkImportPlatform.Automation.Utils;
 using BulkImportPlatform.Core.DTOs;
@@ -60,6 +61,19 @@ public class RpaImportService : IRpaImportService
             .OrderBy(r => r.RowNumber)
             .ToList();
 
+        // Only a full run filters by status - a Retry / Edit & Retry names its rows explicitly.
+        if (job.ImportType == ImportType.Reservation)
+        {
+            var selected = FilterByReservationStatus(eligible, options);
+            if (selected.Count < eligible.Count)
+            {
+                await LogAsync(job.Id, "RPA_RESERVATION_STATUS_FILTER", performedBy,
+                    $"{eligible.Count - selected.Count} row(s) left unpushed because their Status is not one of: " +
+                    string.Join(", ", options.ReservationStatuses!.Select(s => string.IsNullOrWhiteSpace(s) ? "(blank)" : s)) + ".");
+            }
+            eligible = selected;
+        }
+
         await RunEligibleRecordsAsync(job, account, eligible, performedBy, options);
 
         return await BuildSummaryAsync(job.Id);
@@ -74,7 +88,14 @@ public class RpaImportService : IRpaImportService
         var account = await _db.ClientAccounts.FirstOrDefaultAsync(c => c.Id == job.ClientAccountId.Value)
             ?? throw new KeyNotFoundException($"Client account {job.ClientAccountId.Value} was not found.");
 
-        var eligible = job.Records.Where(r => importRecordIds.Contains(r.Id)).OrderBy(r => r.RowNumber).ToList();
+        // Same eligibility as RunAsync: never re-push a row that already succeeded, or one that
+        // was Skipped because a later import replaced its vehicle (that job pushes it instead).
+        var eligible = job.Records
+            .Where(r => importRecordIds.Contains(r.Id)
+                && r.Status == RecordStatus.Imported
+                && (r.RpaStatus == RpaStatus.NotAttempted || r.RpaStatus == RpaStatus.Failed))
+            .OrderBy(r => r.RowNumber)
+            .ToList();
 
         job.Status = ImportJobStatus.RpaInProgress;
         await _db.SaveChangesAsync();
@@ -158,15 +179,22 @@ public class RpaImportService : IRpaImportService
             }
 
             int succeeded = 0, failed = 0;
-            foreach (var record in eligible)
+            if (job.ImportType == ImportType.Reservation)
             {
-                var mappedRow = JsonSerializer.Deserialize<Dictionary<string, string?>>(record.MappedDataJson, JsonOptions) ?? new();
+                (succeeded, failed) = await PushReservationsAsync(session.Page, account, password, job.Id, eligible, performedBy, options);
+            }
+            else
+            {
+                foreach (var record in eligible)
+                {
+                    var mappedRow = JsonSerializer.Deserialize<Dictionary<string, string?>>(record.MappedDataJson, JsonOptions) ?? new();
 
-                var ok = job.ImportType == ImportType.Vehicle
-                    ? await ProcessVehicleAsync(session.Page, mappedRow, job.RpaOwningLocation, job.RpaCurrentLocation, record, performedBy, options)
-                    : await ProcessCustomerAsync(session.Page, mappedRow, record, performedBy, options);
+                    var ok = job.ImportType == ImportType.Vehicle
+                        ? await ProcessVehicleAsync(session.Page, mappedRow, job.RpaOwningLocation, job.RpaCurrentLocation, record, performedBy, options)
+                        : await ProcessCustomerAsync(session.Page, mappedRow, record, performedBy, options);
 
-                if (ok) succeeded++; else failed++;
+                    if (ok) succeeded++; else failed++;
+                }
             }
 
             // Reflects ALL of the job's eligible records, not just the ones processed in this
@@ -219,10 +247,15 @@ public class RpaImportService : IRpaImportService
         var createdModels = new List<string>();
         var problems = new List<string>();
 
+        // Page loads dominate this step's run time, so work is grouped per screen: read every
+        // list on one Add-Asset load, then do all creates on one settings-screen load, then
+        // re-read once to verify - rather than reloading pages for each make/model.
         try
         {
-            await vehiclePage.NavigateAsync();
+            await vehiclePage.NavigateAsync(waitForAllData: true);
             var existingMakes = ToLookupSet(await vehiclePage.ReadMakesAsync());
+            if (existingMakes.Count == 0)
+                throw new InvalidOperationException("the Add-Asset Make list came back empty, so nothing was added (an empty read can't be told apart from a slow load, and adding blindly could create duplicates).");
 
             foreach (var (make, _) in wanted.Values)
             {
@@ -238,44 +271,48 @@ public class RpaImportService : IRpaImportService
                 }
             }
 
+            // One Add-Asset load serves both the make re-check and every make's model list.
+            await vehiclePage.NavigateAsync(waitForAllData: true);
             if (createdMakes.Count > 0)
             {
-                await vehiclePage.NavigateAsync();
                 existingMakes = ToLookupSet(await vehiclePage.ReadMakesAsync());
                 foreach (var make in createdMakes.Where(m => !existingMakes.Contains(m)))
                     problems.Add($"Make '{make}': saved, but it does not appear in the Add-Asset Make list.");
             }
 
+            var missingModels = new List<(string Make, string Model)>();
             foreach (var (make, models) in wanted.Values)
             {
                 if (models.Count == 0 || !existingMakes.Contains(make)) continue;
-
-                await vehiclePage.NavigateAsync();
                 var existingModels = ToLookupSet(await vehiclePage.ReadModelsForMakeAsync(make));
-                var missing = models.Where(m => !existingModels.Contains(m)).ToList();
-                if (missing.Count == 0) continue;
+                missingModels.AddRange(models.Where(m => !existingModels.Contains(m)).Select(m => (make, m)));
+            }
 
-                var createdForMake = new List<string>();
-                foreach (var model in missing)
+            var createdPairs = new List<(string Make, string Model)>();
+            foreach (var (make, model) in missingModels)
+            {
+                try
                 {
-                    try
-                    {
-                        await settingsPage.CreateModelAsync(make, model);
-                        createdForMake.Add(model);
-                    }
-                    catch (Exception ex)
-                    {
-                        problems.Add($"Model '{make} {model}': {ex.Message}");
-                    }
+                    await settingsPage.CreateModelAsync(make, model);
+                    createdPairs.Add((make, model));
                 }
-
-                if (createdForMake.Count == 0) continue;
-                await vehiclePage.NavigateAsync();
-                existingModels = ToLookupSet(await vehiclePage.ReadModelsForMakeAsync(make));
-                foreach (var model in createdForMake)
+                catch (Exception ex)
                 {
-                    if (existingModels.Contains(model)) createdModels.Add($"{make} {model}");
-                    else problems.Add($"Model '{make} {model}': saved, but it does not appear in the Add-Asset Model list.");
+                    problems.Add($"Model '{make} {model}': {ex.Message}");
+                }
+            }
+
+            if (createdPairs.Count > 0)
+            {
+                await vehiclePage.NavigateAsync(waitForAllData: true);
+                foreach (var group in createdPairs.GroupBy(p => p.Make, StringComparer.OrdinalIgnoreCase))
+                {
+                    var existingModels = ToLookupSet(await vehiclePage.ReadModelsForMakeAsync(group.Key));
+                    foreach (var (make, model) in group)
+                    {
+                        if (existingModels.Contains(model)) createdModels.Add($"{make} {model}");
+                        else problems.Add($"Model '{make} {model}': saved, but it does not appear in the Add-Asset Model list.");
+                    }
                 }
             }
         }
@@ -297,6 +334,16 @@ public class RpaImportService : IRpaImportService
 
     private async Task<bool> ProcessVehicleAsync(IPage page, Dictionary<string, string?> row, string? owningLocation, string? currentLocation, ImportRecord record, string performedBy, RpaRunOptionsDto options)
     {
+        // irentosoft refuses to save a vehicle without a type - fail now rather than after
+        // ~20s of filling in the form and waiting on Save.
+        if (string.IsNullOrWhiteSpace(Get(row, "VehicleType")))
+        {
+            await RecordAttemptAsync(record, RpaStatus.Failed, "MissingRequired",
+                "Vehicle Type is required by irentosoft. Set it with Edit & Retry, or map it / give it a default on the Mapping step.",
+                performedBy, null);
+            return false;
+        }
+
         var vehiclePage = new VehicleCreatePage(page);
         string? failureStage = null;
         string? failureMessage = null;
@@ -323,6 +370,10 @@ public class RpaImportService : IRpaImportService
             await SetIfPresent(row, "TankSize", vehiclePage.SetTankSizeAsync);
             await SetIfPresent(row, "Odometer", vehiclePage.SetOdometerAsync);
             await SetIfPresent(row, "SpotNumber", vehiclePage.SetSpotNumberAsync);
+
+            // irentosoft can overwrite Code with its own auto-number after we type it.
+            var vehicleNumber = Get(row, "VehicleNumber");
+            if (!string.IsNullOrWhiteSpace(vehicleNumber)) await vehiclePage.EnsureCodeAsync(vehicleNumber);
 
             var outcome = await vehiclePage.SaveAsync();
             if (outcome.Success) success = true;
@@ -410,6 +461,171 @@ public class RpaImportService : IRpaImportService
             await RecordAttemptAsync(record, RpaStatus.Failed, failureStage, failureMessage, performedBy, screenshotPath);
 
         return success;
+    }
+
+    // ---------- Reservations (direct API, not form filling) ----------
+
+    private static List<ImportRecord> FilterByReservationStatus(List<ImportRecord> records, RpaRunOptionsDto options)
+    {
+        if (options.ReservationStatuses == null || options.ReservationStatuses.Count == 0) return records;
+
+        // "" is a real choice here: it selects rows whose Status cell is blank.
+        var statuses = options.ReservationStatuses
+            .Select(s => s?.Trim() ?? string.Empty)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        return records.Where(r =>
+        {
+            var row = JsonSerializer.Deserialize<Dictionary<string, string?>>(r.MappedDataJson, JsonOptions) ?? new();
+            return statuses.Contains(Get(row, "Status")?.Trim() ?? string.Empty);
+        }).ToList();
+    }
+
+    /// <summary>
+    /// Creates each reservation with one call to irentosoft's booking API, using the token of
+    /// the browser session that just logged in - typically well under a second per row versus
+    /// ~20s per row for form filling - with several calls in flight at once.
+    ///
+    /// Rows are grouped by customer (phone, else name) and each group is pushed in order by a
+    /// single worker: irentosoft matches an existing customer by phone, so two parallel
+    /// bookings for one new customer would otherwise each create that customer. For name-only
+    /// groups the customer id created by the first booking is read back and reused.
+    /// </summary>
+    private async Task<(int Succeeded, int Failed)> PushReservationsAsync(IPage page, ClientAccount account, string password, int importJobId, List<ImportRecord> records, string performedBy, RpaRunOptionsDto options)
+    {
+        var started = DateTime.UtcNow;
+
+        // Called by the API client when its token is rejected mid-run. Only one call at a time
+        // (the client serializes refreshes), so sharing the single browser page is safe.
+        async Task<string?> Reauthenticate(string rejectedToken)
+        {
+            try
+            {
+                var current = await IrentosoftApiClient.CaptureTokenAsync(page);
+                if (current != rejectedToken) return current;
+            }
+            catch
+            {
+                // Likely sent back to the login screen - log in again below.
+            }
+            try
+            {
+                var login = await new IrentosoftLoginPage(page).LoginAsync(account.IrentosoftUsername, password);
+                return login == LoginResult.Success ? await IrentosoftApiClient.CaptureTokenAsync(page) : null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        IrentosoftApiClient api;
+        ReservationRequestBuilder builder;
+        try
+        {
+            api = await IrentosoftApiClient.ConnectAsync(page, Reauthenticate);
+            builder = await ReservationRequestBuilder.LoadAsync(api);
+        }
+        catch (Exception ex)
+        {
+            foreach (var record in records)
+                await RecordAttemptAsync(record, RpaStatus.Failed, "ApiConnect", $"Could not connect to irentosoft's booking API: {ex.Message}", performedBy, null);
+            return (0, records.Count);
+        }
+
+        using (api)
+        {
+            await LogAsync(importJobId, "RPA_RESERVATION_LOOKUPS", performedBy,
+                $"Loaded {builder.LocationCount} locations, {builder.VehicleCount} vehicles and {builder.RatePlanCount} rate plans from irentosoft.");
+
+            var groups = records
+                .Select(r => (Record: r, Row: JsonSerializer.Deserialize<Dictionary<string, string?>>(r.MappedDataJson, JsonOptions) ?? new()))
+                .GroupBy(x => CustomerKey(x.Row) ?? $"row:{x.Record.Id}")
+                .Select(g => g.OrderBy(x => x.Record.RowNumber).ToList())
+                .ToList();
+
+            var dbLock = new SemaphoreSlim(1, 1);
+            int succeeded = 0, failed = 0;
+
+            await Parallel.ForEachAsync(groups, new ParallelOptions { MaxDegreeOfParallelism = Math.Clamp(options.MaxParallelRequests, 1, 8) }, async (group, _) =>
+            {
+                int? customerId = null;
+                var nameOnlyCustomer = string.IsNullOrWhiteSpace(Get(group[0].Row, "CustomerPhone"));
+
+                for (var i = 0; i < group.Count; i++)
+                {
+                    var (record, row) = group[i];
+                    RpaStatus outcome;
+                    string? stage = null;
+                    string? message;
+                    int? bookingId = null;
+
+                    var built = builder.Build(row, customerId);
+                    if (built.Request == null)
+                    {
+                        outcome = RpaStatus.Failed;
+                        stage = "Lookup";
+                        message = built.Error;
+                    }
+                    else
+                    {
+                        try
+                        {
+                            bookingId = await api.CreateBookingAsync(built.Request);
+                            outcome = RpaStatus.Succeeded;
+
+                            var notes = Get(row, "Notes");
+                            if (!string.IsNullOrWhiteSpace(notes))
+                            {
+                                try { await api.AddBookingNoteAsync(bookingId.Value, notes.Trim()); }
+                                catch (Exception ex) { built.Notes.Add($"note not added ({ex.Message})"); }
+                            }
+
+                            // Reuse the customer irentosoft just created for this person's later bookings.
+                            if (customerId == null && nameOnlyCustomer && i < group.Count - 1)
+                            {
+                                try { customerId = await api.GetBookingCustomerIdAsync(bookingId.Value); }
+                                catch { /* later rows just create their own customer record */ }
+                            }
+
+                            message = $"Booking #{bookingId} created" + (built.Notes.Count > 0 ? " - " + string.Join("; ", built.Notes) : ".");
+                        }
+                        catch (Exception ex)
+                        {
+                            outcome = RpaStatus.Failed;
+                            stage = "Api";
+                            message = ex.Message;
+                        }
+                    }
+
+                    await dbLock.WaitAsync();
+                    try
+                    {
+                        if (bookingId != null) record.RpaEntityReference = bookingId.Value.ToString();
+                        await RecordAttemptAsync(record, outcome, stage, message, performedBy, null);
+                        if (outcome == RpaStatus.Succeeded) succeeded++; else failed++;
+                    }
+                    finally
+                    {
+                        dbLock.Release();
+                    }
+                }
+            });
+
+            var elapsed = DateTime.UtcNow - started;
+            await LogAsync(importJobId, "RPA_RESERVATION_PUSH", performedBy,
+                $"{succeeded} created, {failed} failed in {elapsed:mm\\:ss} ({Math.Clamp(options.MaxParallelRequests, 1, 8)} parallel requests).");
+            return (succeeded, failed);
+        }
+    }
+
+    /// <summary>Phone digits when there are enough to identify someone, else the name; null if neither.</summary>
+    private static string? CustomerKey(Dictionary<string, string?> row)
+    {
+        var digits = new string((Get(row, "CustomerPhone") ?? string.Empty).Where(char.IsDigit).ToArray());
+        if (digits.Length >= 4) return "phone:" + digits;
+        var name = string.Join(' ', (Get(row, "CustomerName") ?? string.Empty).Split(' ', StringSplitOptions.RemoveEmptyEntries)).ToUpperInvariant();
+        return name.Length > 0 ? "name:" + name : null;
     }
 
     // ---------- Helpers ----------

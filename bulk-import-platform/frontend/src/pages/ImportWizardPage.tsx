@@ -15,6 +15,7 @@ import {
 import { styled } from "@mui/material/styles";
 import DirectionsCarFilledRoundedIcon from "@mui/icons-material/DirectionsCarFilledRounded";
 import PeopleAltRoundedIcon from "@mui/icons-material/PeopleAltRounded";
+import EventAvailableRoundedIcon from "@mui/icons-material/EventAvailableRounded";
 import UploadFileRoundedIcon from "@mui/icons-material/UploadFileRounded";
 import RuleFolderRoundedIcon from "@mui/icons-material/RuleFolderRounded";
 import FactCheckRoundedIcon from "@mui/icons-material/FactCheckRounded";
@@ -129,8 +130,9 @@ export default function ImportWizardPage({ type }: { type: ImportType }) {
     }
   };
 
-  const label = type === "vehicle" ? "Vehicle" : "Customer";
-  const Icon = type === "vehicle" ? DirectionsCarFilledRoundedIcon : PeopleAltRoundedIcon;
+  const label = type.charAt(0).toUpperCase() + type.slice(1);
+  const Icon =
+    type === "vehicle" ? DirectionsCarFilledRoundedIcon : type === "reservation" ? EventAvailableRoundedIcon : PeopleAltRoundedIcon;
 
   return (
     <Box>

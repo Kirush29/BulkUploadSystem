@@ -25,11 +25,12 @@ public class TemplatesController : ControllerBase
         {
             "vehicle" or "vehicles" => ImportType.Vehicle,
             "customer" or "customers" => ImportType.Customer,
+            "reservation" or "reservations" => ImportType.Reservation,
             _ => throw new ArgumentException($"Unknown import type '{type}'.")
         };
 
         var bytes = _excelService.GenerateTemplate(importType);
-        var fileName = importType == ImportType.Vehicle ? "vehicle_import_template.xlsx" : "customer_import_template.xlsx";
+        var fileName = $"{importType.ToString().ToLowerInvariant()}_import_template.xlsx";
         return File(bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
     }
 }

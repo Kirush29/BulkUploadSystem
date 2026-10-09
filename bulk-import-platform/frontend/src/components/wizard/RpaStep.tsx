@@ -1,6 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Box,
+  Checkbox,
+  FormControlLabel,
+  FormGroup,
+  MenuItem,
   Typography,
   Button,
   Chip,
@@ -44,11 +48,53 @@ export default function RpaStep({
   // retried row gets the same make/model handling as the run it came from.
   const [askNewAccount, setAskNewAccount] = useState(false);
   const [createMissingMakesAndModels, setCreateMissingMakesAndModels] = useState(false);
-  const rpaOptions = { createMissingMakesAndModels };
+  // Reservation pushes only: which source Status values to push, and API calls in flight at once.
+  const [reservationStatuses, setReservationStatuses] = useState<string[] | null>(null);
+  const [maxParallelRequests, setMaxParallelRequests] = useState(4);
+  const isReservation = type === "reservation";
+  const rpaOptions = isReservation
+    ? { reservationStatuses: reservationStatuses ?? [], maxParallelRequests }
+    : { createMissingMakesAndModels };
 
   useEffect(() => {
     RpaApi.status(importJobId).then(setSummary).catch(() => {});
   }, [importJobId]);
+
+  // A large push can run for minutes - poll so the grid fills in as rows complete.
+  useEffect(() => {
+    if (!busy) return;
+    const timer = setInterval(() => {
+      RpaApi.status(importJobId).then(setSummary).catch(() => {});
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [busy, importJobId]);
+
+  // Status values in the file, with how many rows still need pushing for each.
+  const statusCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const r of summary?.records ?? []) {
+      if (r.rpaStatus === "Succeeded" || r.rpaStatus === "Skipped") continue;
+      const status = (r.mappedData["Status"] ?? "").trim();
+      counts.set(status, (counts.get(status) ?? 0) + 1);
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  }, [summary]);
+
+  // Default to open bookings only: historical rows (done/cancel/...) are rarely wanted as new reservations.
+  useEffect(() => {
+    if (!isReservation || reservationStatuses !== null || statusCounts.length === 0) return;
+    const reserved = statusCounts.map(([s]) => s).filter((s) => s.toLowerCase() === "reserved");
+    setReservationStatuses(reserved.length > 0 ? reserved : statusCounts.map(([s]) => s));
+  }, [isReservation, reservationStatuses, statusCounts]);
+
+  const toggleStatus = (status: string) =>
+    setReservationStatuses((prev) =>
+      (prev ?? []).includes(status) ? (prev ?? []).filter((s) => s !== status) : [...(prev ?? []), status]
+    );
+
+  const selectedCount = statusCounts
+    .filter(([s]) => (reservationStatuses ?? []).includes(s))
+    .reduce((sum, [, n]) => sum + n, 0);
 
   const handlePushClick = () => {
     if (type === "vehicle") setAskNewAccount(true);
@@ -63,7 +109,7 @@ export default function RpaStep({
       const result = await RpaApi.run(importJobId, {
         owningLocation: type === "vehicle" ? owningLocation : undefined,
         currentLocation: type === "vehicle" ? currentLocation : undefined,
-        options: { createMissingMakesAndModels: createMissing },
+        options: isReservation ? rpaOptions : { createMissingMakesAndModels: createMissing },
       });
       setSummary(result);
       enqueueSnackbar(
@@ -170,11 +216,45 @@ export default function RpaStep({
   return (
     <Box>
       <Typography variant="h6" gutterBottom>Step 5: Push to irentosoft</Typography>
-      <Typography color="text.secondary" sx={{ mb: 2 }}>
-        irentosoft has no bulk-upload feature of its own - this drives its web forms directly,
-        logged in as <strong>{clientAccountName}</strong> (chosen at upload), to enter every
-        record committed in the previous step.
-      </Typography>
+      {isReservation ? (
+        <Typography color="text.secondary" sx={{ mb: 2 }}>
+          Logs in to irentosoft as <strong>{clientAccountName}</strong> (chosen at upload), then creates
+          each reservation through irentosoft's own booking API - the same call its Add Reservation
+          screen makes - so rows take well under a second each instead of filling in forms. Customers
+          are matched by phone; anyone not found is created. Bookings are created with status New and
+          no emails are sent.
+        </Typography>
+      ) : (
+        <Typography color="text.secondary" sx={{ mb: 2 }}>
+          irentosoft has no bulk-upload feature of its own - this drives its web forms directly,
+          logged in as <strong>{clientAccountName}</strong> (chosen at upload), to enter every
+          record committed in the previous step.
+        </Typography>
+      )}
+
+      {isReservation && statusCounts.length > 0 && (
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
+            Push rows with status ({selectedCount} row(s) selected)
+          </Typography>
+          <FormGroup row>
+            {statusCounts.map(([status, count]) => (
+              <FormControlLabel
+                key={status}
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={(reservationStatuses ?? []).includes(status)}
+                    onChange={() => toggleStatus(status)}
+                    disabled={busy}
+                  />
+                }
+                label={`${status || "(blank)"} (${count})`}
+              />
+            ))}
+          </FormGroup>
+        </Box>
+      )}
 
       <Stack direction="row" spacing={2} sx={{ mb: 2, flexWrap: "wrap" }}>
         {type === "vehicle" && (
@@ -194,10 +274,26 @@ export default function RpaStep({
           </>
         )}
 
+        {isReservation && (
+          <TextField
+            select
+            label="Parallel requests"
+            value={maxParallelRequests}
+            onChange={(e) => setMaxParallelRequests(Number(e.target.value))}
+            disabled={busy}
+            sx={{ minWidth: 160 }}
+            helperText="Higher is faster; lower is gentler on irentosoft"
+          >
+            {[1, 2, 4, 6, 8].map((n) => (
+              <MenuItem key={n} value={n}>{n}</MenuItem>
+            ))}
+          </TextField>
+        )}
+
         <Button
           variant="contained"
           onClick={handlePushClick}
-          disabled={busy}
+          disabled={busy || (isReservation && selectedCount === 0)}
           startIcon={busy ? <CircularProgress size={18} color="inherit" /> : undefined}
         >
           {alreadyRun ? "Run Again" : "Push to irentosoft"}

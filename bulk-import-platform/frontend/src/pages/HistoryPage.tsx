@@ -96,6 +96,7 @@ export default function HistoryPage() {
       >
         <ToggleButton value="vehicle">Vehicle</ToggleButton>
         <ToggleButton value="customer">Customer</ToggleButton>
+        <ToggleButton value="reservation">Reservation</ToggleButton>
       </ToggleButtonGroup>
 
       {error && <Alert severity="warning" sx={{ mb: 2 }}>{error}</Alert>}

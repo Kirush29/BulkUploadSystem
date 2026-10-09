@@ -3,7 +3,8 @@ namespace BulkImportPlatform.Core.Enums;
 public enum ImportType
 {
     Vehicle = 1,
-    Customer = 2
+    Customer = 2,
+    Reservation = 3
 }
 
 public enum ImportJobStatus

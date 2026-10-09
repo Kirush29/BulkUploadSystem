@@ -1,4 +1,4 @@
-export type ImportType = "vehicle" | "customer";
+export type ImportType = "vehicle" | "customer" | "reservation";
 
 export type ImportJobStatus =
   | "Uploaded"
@@ -83,7 +83,7 @@ export interface UploadHistoryItemDto {
   uploadedBy: string;
   fileName: string;
   clientAccountName?: string;
-  importType: "Vehicle" | "Customer";
+  importType: "Vehicle" | "Customer" | "Reservation";
   status: ImportJobStatus;
   totalRecords: number;
   importedRecords: number;
@@ -146,6 +146,10 @@ export interface RpaRunOptionsDto {
   // Vehicle pushes only: add Makes/Models missing from the irentosoft account before entering
   // vehicles (never re-adds an existing one).
   createMissingMakesAndModels?: boolean;
+  // Reservation pushes only: source Status values to push (empty = all), and how many booking
+  // API calls run at once (1-8).
+  reservationStatuses?: string[];
+  maxParallelRequests?: number;
 }
 
 export interface RpaRunRequestDto {

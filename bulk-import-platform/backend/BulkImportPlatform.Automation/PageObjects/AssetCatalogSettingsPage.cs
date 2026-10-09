@@ -47,11 +47,18 @@ public class AssetCatalogSettingsPage
 
     // ---------- Internals ----------
 
-    /// <summary>Loads the screen and returns its "Add New" form (the search box sits outside any form).</summary>
+    /// <summary>
+    /// Returns the screen's "Add New" form (the search box sits outside any form). The form
+    /// resets itself after each save, so consecutive creates on the same screen reuse the
+    /// already-loaded page instead of reloading it every time.
+    /// </summary>
     private async Task<ILocator> OpenAsync(string url)
     {
-        await _page.GotoAsync(url);
-        await _page.WaitForLoadStateAsync(LoadState.NetworkIdle);
+        if (!_page.Url.StartsWith(url, StringComparison.OrdinalIgnoreCase))
+        {
+            await _page.GotoAsync(url);
+            await _page.WaitForLoadStateAsync(LoadState.NetworkIdle);
+        }
 
         var form = _page.Locator("form").Filter(new() { Has = _page.Locator("input[name='name']") }).First;
         await form.WaitForAsync(new() { Timeout = 10000 });
@@ -77,10 +84,7 @@ public class AssetCatalogSettingsPage
                 throw new InvalidOperationException($"irentosoft rejected {what}: {inlineError}");
 
             if (string.IsNullOrEmpty(await nameInput.InputValueAsync()))
-            {
-                await _page.WaitForLoadStateAsync(LoadState.NetworkIdle);
                 return;
-            }
 
             await _page.WaitForTimeoutAsync(300);
         }

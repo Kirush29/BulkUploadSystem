@@ -18,9 +18,7 @@ public class DefaultValueEngine : IDefaultValueEngine
         Dictionary<string, string> configuredDefaults,
         ImportType type)
     {
-        var builtIns = type == ImportType.Vehicle
-            ? FieldDefinitions.BuiltInDefaultsVehicle
-            : FieldDefinitions.BuiltInDefaultsCustomer;
+        var builtIns = FieldDefinitions.BuiltInDefaultsFor(type);
 
         // Configured (user-supplied) defaults take precedence over built-in ones.
         var effectiveDefaults = new Dictionary<string, string>(builtIns, StringComparer.OrdinalIgnoreCase);

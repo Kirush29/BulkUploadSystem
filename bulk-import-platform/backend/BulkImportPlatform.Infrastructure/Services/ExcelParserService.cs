@@ -1,3 +1,4 @@
+using System.Globalization;
 using BulkImportPlatform.Core;
 using BulkImportPlatform.Core.Enums;
 using BulkImportPlatform.Core.Interfaces;
@@ -93,7 +94,7 @@ public class ExcelParserService : IExcelParserService
                 for (var i = 0; i < headers.Count; i++)
                 {
                     var cell = row.Cell(i + 1);
-                    var value = cell.IsEmpty() ? null : cell.GetString().Trim();
+                    var value = cell.IsEmpty() ? null : CellText(cell);
                     if (!string.IsNullOrEmpty(value)) isEmptyRow = false;
                     rowDict[headers[i]] = string.IsNullOrEmpty(value) ? null : value;
                 }
@@ -103,10 +104,32 @@ public class ExcelParserService : IExcelParserService
         }
     }
 
+    /// <summary>
+    /// Date cells become ISO text ("2026-04-22T12:00:00", or "2026-04-22" at midnight) rather
+    /// than GetString()'s server-culture rendering, so they parse the same way on any machine
+    /// and keep their time of day (needed for reservation pickup/return).
+    /// </summary>
+    private static string CellText(IXLCell cell)
+    {
+        if (cell.DataType == XLDataType.DateTime)
+        {
+            var dt = cell.GetDateTime();
+            return dt.TimeOfDay == TimeSpan.Zero
+                ? dt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+                : dt.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture);
+        }
+        return cell.GetString().Trim();
+    }
+
     public byte[] GenerateTemplate(ImportType type)
     {
         using var workbook = new XLWorkbook();
-        var sheetName = type == ImportType.Vehicle ? "Vehicles" : "Customers";
+        var sheetName = type switch
+        {
+            ImportType.Vehicle => "Vehicles",
+            ImportType.Reservation => "Reservations",
+            _ => "Customers"
+        };
         var worksheet = workbook.Worksheets.Add(sheetName);
 
         var fields = FieldDefinitions.For(type);

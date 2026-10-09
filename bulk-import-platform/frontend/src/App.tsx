@@ -13,6 +13,7 @@ export default function App() {
         <Route path="/" element={<DashboardPage />} />
         <Route path="/vehicle" element={<ImportWizardPage type="vehicle" />} />
         <Route path="/customer" element={<ImportWizardPage type="customer" />} />
+        <Route path="/reservation" element={<ImportWizardPage type="reservation" />} />
         <Route path="/history" element={<HistoryPage />} />
         <Route path="/audit" element={<AuditPage />} />
         <Route path="/client-accounts" element={<ClientAccountsPage />} />

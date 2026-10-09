@@ -26,10 +26,19 @@ public class VehicleCreatePage
         _page = page;
     }
 
-    public async Task NavigateAsync()
+    /// <summary>
+    /// Opens a fresh Add-Asset form. By default only waits until the form itself is rendered -
+    /// every dropdown setter already waits for its own options to arrive, so waiting for the
+    /// whole page's network to go idle (several seconds per vehicle) buys nothing there.
+    /// Pass <paramref name="waitForAllData"/> when the dropdown lists themselves are being read
+    /// (catalog sync): an option list read before its data loads would look empty.
+    /// </summary>
+    public async Task NavigateAsync(bool waitForAllData = false)
     {
-        await _page.GotoAsync("https://live.irentosoft.com/Asset/Add-Asset");
-        await _page.WaitForLoadStateAsync(LoadState.NetworkIdle);
+        await _page.GotoAsync("https://live.irentosoft.com/Asset/Add-Asset",
+            new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await _page.Locator("[id='mui-component-select-makeId']").WaitForAsync(new() { Timeout = 30000 });
+        if (waitForAllData) await _page.WaitForLoadStateAsync(LoadState.NetworkIdle);
     }
 
     public Task SetOwningLocationAsync(string text) => DropdownSelector.SelectMuiAsync(_page, "owningLocationId", text);
@@ -37,11 +46,43 @@ public class VehicleCreatePage
     public Task SetCurrentLocationAsync(string text) => DropdownSelector.SelectMuiAsync(_page, "locationId", text);
 
     /// <summary>
-    /// Maps our Vehicle.VehicleNumber to irentosoft's field labeled "Code" (per the account
-    /// owner - not documented in the IrentoQA catalog). Selector is a best-effort guess
-    /// (input[name='code']) pending confirmation during the live verification pass.
+    /// Maps our Vehicle.VehicleNumber to irentosoft's field labeled "Code" (input[name='code'],
+    /// confirmed live).
+    ///
+    /// irentosoft pre-fills Code with its own next running number, fetched asynchronously
+    /// (GET /vehicles/code, observed ~1-5s after the form renders, sometimes twice). Anything
+    /// typed before that lands is silently overwritten - which is how vehicles ended up saved
+    /// as "57", "60", ... instead of their real numbers. So: wait for the pre-fill first, and
+    /// call <see cref="EnsureCodeAsync"/> right before Save to catch a late second overwrite.
     /// </summary>
-    public Task SetCodeAsync(string vehicleNumber) => _page.FillAsync("input[name='code']", vehicleNumber);
+    public async Task SetCodeAsync(string vehicleNumber)
+    {
+        var code = _page.Locator("input[name='code']");
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (DateTime.UtcNow < deadline && string.IsNullOrEmpty(await code.InputValueAsync()))
+        {
+            await _page.WaitForTimeoutAsync(200);
+        }
+        await code.FillAsync(vehicleNumber);
+    }
+
+    /// <summary>
+    /// Re-checks Code immediately before Save and re-types it if irentosoft's auto-number
+    /// replaced it in the meantime. Throws rather than saving a vehicle under the wrong code.
+    /// </summary>
+    public async Task EnsureCodeAsync(string vehicleNumber)
+    {
+        var code = _page.Locator("input[name='code']");
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            if (await code.InputValueAsync() == vehicleNumber) return;
+            await code.FillAsync(vehicleNumber);
+            await _page.WaitForTimeoutAsync(500);
+        }
+        if (await code.InputValueAsync() != vehicleNumber)
+            throw new InvalidOperationException(
+                $"irentosoft kept replacing Code '{vehicleNumber}' with '{await code.InputValueAsync()}' - not saved, to avoid creating the vehicle under the wrong number.");
+    }
 
     public Task SetVinAsync(string vin) => _page.FillAsync("input[name='vinNumber']", vin);
 
@@ -60,6 +101,9 @@ public class VehicleCreatePage
     /// so "exists" here means exactly "selectable when creating the vehicle".
     /// </summary>
     public Task<List<string>> ReadMakesAsync() => DropdownSelector.ReadMuiOptionsAsync(_page, "makeId");
+
+    // Selecting a different make re-filters the Model list in place, so several makes'
+    // models can be read on one page load (no navigation needed between them).
 
     /// <summary>Models configured under <paramref name="make"/> (the Model list is filtered by the selected make).</summary>
     public async Task<List<string>> ReadModelsForMakeAsync(string make)

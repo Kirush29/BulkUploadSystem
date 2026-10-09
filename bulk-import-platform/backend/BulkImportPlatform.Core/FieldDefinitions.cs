@@ -47,8 +47,43 @@ public static class FieldDefinitions
         new FieldDefinition { SystemField = "DriverLicenseNumber", IsMandatory = false, DataType = "string" },
     };
 
-    public static List<FieldDefinition> For(ImportType type) =>
-        type == ImportType.Vehicle ? Vehicle : Customer;
+    /// <summary>
+    /// Reservations are pushed straight to irentosoft's booking API (see RpaImportService), so
+    /// these mirror what that API needs: dates, a vehicle (by number, or by group/type when no
+    /// specific vehicle is assigned), pickup/return location names, and the customer - matched
+    /// by irentosoft on phone number, or created from the name when no match is found.
+    /// </summary>
+    public static readonly List<FieldDefinition> Reservation = new()
+    {
+        new FieldDefinition { SystemField = "ReservationNumber", IsMandatory = false, DataType = "string" },
+        new FieldDefinition { SystemField = "PickupDateTime", IsMandatory = true, DataType = "date" },
+        new FieldDefinition { SystemField = "ReturnDateTime", IsMandatory = true, DataType = "date" },
+        new FieldDefinition { SystemField = "CustomerName", IsMandatory = true, DataType = "string" },
+        new FieldDefinition { SystemField = "CustomerPhone", IsMandatory = false, DataType = "string" },
+        new FieldDefinition { SystemField = "CustomerEmail", IsMandatory = false, DataType = "string" },
+        new FieldDefinition { SystemField = "VehicleNumber", IsMandatory = false, DataType = "string" },
+        new FieldDefinition { SystemField = "VehicleGroup", IsMandatory = false, DataType = "string" },
+        new FieldDefinition { SystemField = "PickupLocation", IsMandatory = true, DataType = "string" },
+        new FieldDefinition { SystemField = "ReturnLocation", IsMandatory = false, DataType = "string" },
+        new FieldDefinition { SystemField = "Status", IsMandatory = false, DataType = "string" },
+        new FieldDefinition { SystemField = "VehiclePrice", IsMandatory = false, DataType = "decimal" },
+        new FieldDefinition { SystemField = "SecurityDeposit", IsMandatory = false, DataType = "decimal" },
+        new FieldDefinition { SystemField = "Notes", IsMandatory = false, DataType = "string" },
+    };
+
+    public static List<FieldDefinition> For(ImportType type) => type switch
+    {
+        ImportType.Vehicle => Vehicle,
+        ImportType.Reservation => Reservation,
+        _ => Customer
+    };
+
+    public static Dictionary<string, string> BuiltInDefaultsFor(ImportType type) => type switch
+    {
+        ImportType.Vehicle => BuiltInDefaultsVehicle,
+        ImportType.Reservation => BuiltInDefaultsReservation,
+        _ => BuiltInDefaultsCustomer
+    };
 
     /// <summary>
     /// Default heuristic mapping profile applied automatically when a spreadsheet's column
@@ -76,6 +111,22 @@ public static class FieldDefinitions
         { "Email Address", "Email" },
         { "Phone Number", "Phone" },
         { "Mobile", "Phone" },
+
+        // Reservation aliases (headers of irentosoft-style reservation exports)
+        { "Id", "ReservationNumber" },
+        { "Reservation No", "ReservationNumber" },
+        { "Booking Id", "ReservationNumber" },
+        { "Pickup", "PickupDateTime" },
+        { "Pickup Date", "PickupDateTime" },
+        { "Start Date", "PickupDateTime" },
+        { "Return", "ReturnDateTime" },
+        { "Return Date", "ReturnDateTime" },
+        { "End Date", "ReturnDateTime" },
+        { "Customer", "CustomerName" },
+        { "Customer Email", "CustomerEmail" },
+        { "Vehicle Type", "VehicleGroup" },
+        { "Notice", "Notes" },
+        { "Note", "Notes" },
     };
 
     /// <summary>
@@ -93,4 +144,8 @@ public static class FieldDefinitions
     {
         { "Status", "Active" },
     };
+
+    // No built-ins: a reservation's Status is the source system's (reserved/done/cancel...)
+    // and is used to choose which rows get pushed, so it must never be filled in silently.
+    public static readonly Dictionary<string, string> BuiltInDefaultsReservation = new();
 }

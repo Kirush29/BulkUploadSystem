@@ -185,6 +185,17 @@ public class RpaRunOptionsDto
     // Asset Model). Opt-in - intended for new accounts with an empty catalog. Existing entries
     // are never re-added (case-insensitive match against the live dropdown lists).
     public bool CreateMissingMakesAndModels { get; set; } = false;
+
+    // Reservation pushes only: which source-file Status values to push (case-insensitive, e.g.
+    // ["reserved"]; "" = blank Status). Null/empty pushes every row. Applies to a full run only,
+    // not Retry / Edit & Retry. Rows with other statuses are left untouched (NotAttempted), so a
+    // later run with a different selection can still push them.
+    public List<string>? ReservationStatuses { get; set; }
+
+    // Reservation pushes only: how many booking API calls run at once. Reservations go to
+    // irentosoft's API directly rather than through its web forms, so this is the main speed
+    // lever; kept low by default since it is a live production system. Clamped to 1-8.
+    public int MaxParallelRequests { get; set; } = 4;
 }
 
 public class RpaRunSummaryDto

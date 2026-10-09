@@ -157,10 +157,19 @@ public class ImportService : IImportService
 
         // Scoped to this job's client account - VehicleNumber is unique per client, not
         // globally, so two different clients may legitimately share the same vehicle number.
-        var existingVehicleNumbers = job.ImportType == ImportType.Vehicle
-            ? (await _db.Vehicles.Where(v => v.ClientAccountId == job.ClientAccountId).Select(v => v.VehicleNumber).ToListAsync())
-                .Select(v => v.Trim().ToUpperInvariant()).ToHashSet()
-            : new HashSet<string>();
+        // Only vehicles that really exist count as duplicates; ones left behind by an earlier
+        // import whose irentosoft push never succeeded are reported separately (as a warning)
+        // so the same file can be re-imported after e.g. a failed login.
+        var existingVehicleNumbers = new HashSet<string>();
+        var unpushedVehicleNumbers = new Dictionary<string, int>();
+        if (job.ImportType == ImportType.Vehicle)
+        {
+            foreach (var local in await LoadLocalVehiclesAsync(job.ClientAccountId))
+            {
+                if (local.IsUnpushed) unpushedVehicleNumbers[local.Key] = local.Vehicle.ImportJobId!.Value;
+                else existingVehicleNumbers.Add(local.Key);
+            }
+        }
 
         // Count in-file occurrences of each vehicle number up-front so duplicate detection works
         // regardless of row order.
@@ -177,6 +186,22 @@ public class ImportService : IImportService
             }
         }
 
+        // Reservations: duplicates within the file, and reservation numbers this client account
+        // already got into irentosoft from an earlier import (re-pushing would double-book).
+        var reservationNumberCounts = new Dictionary<string, int>();
+        var pushedReservationNumbers = new Dictionary<string, int>();
+        if (job.ImportType == ImportType.Reservation)
+        {
+            foreach (var row in mappedRows)
+            {
+                var number = Get(row, "ReservationNumber");
+                if (string.IsNullOrWhiteSpace(number)) continue;
+                var key = number.Trim().ToUpperInvariant();
+                reservationNumberCounts[key] = reservationNumberCounts.GetValueOrDefault(key) + 1;
+            }
+            pushedReservationNumbers = await LoadPushedReservationNumbersAsync(job);
+        }
+
         var records = job.Records.OrderBy(r => r.RowNumber).ToList();
         int validCount = 0, warningCount = 0, errorCount = 0;
 
@@ -187,7 +212,9 @@ public class ImportService : IImportService
 
             var defaultsApplied = _defaultValueEngine.ApplyDefaults(mappedRow, request.DefaultValues, job.ImportType);
 
-            var validationResults = _validationEngine.Validate(mappedRow, job.ImportType, vehicleNumberCounts, existingVehicleNumbers);
+            var validationResults = job.ImportType == ImportType.Reservation
+                ? _validationEngine.ValidateReservation(mappedRow, reservationNumberCounts, pushedReservationNumbers)
+                : _validationEngine.Validate(mappedRow, job.ImportType, vehicleNumberCounts, existingVehicleNumbers, unpushedVehicleNumbers);
 
             record.MappedDataJson = JsonSerializer.Serialize(mappedRow);
             record.DefaultsAppliedJson = JsonSerializer.Serialize(defaultsApplied);
@@ -282,36 +309,66 @@ public class ImportService : IImportService
 
         int imported = 0, failed = 0;
 
+        // Re-checked here rather than trusted from validation, since another job could have
+        // pushed (or replaced) the same vehicle number in between.
+        var localVehicles = job.ImportType == ImportType.Vehicle
+            ? (await LoadLocalVehiclesAsync(job.ClientAccountId)).ToDictionary(l => l.Key)
+            : new Dictionary<string, LocalVehicle>();
+
         foreach (var record in importable)
         {
             var mappedRow = JsonSerializer.Deserialize<Dictionary<string, string?>>(record.MappedDataJson, JsonOptions) ?? new();
             try
             {
-                if (job.ImportType == ImportType.Vehicle)
+                if (job.ImportType == ImportType.Reservation)
                 {
-                    var vehicle = new Vehicle
+                    // No local reservation table: the validated mapped row on the ImportRecord is
+                    // the local copy, and the push step creates the booking in irentosoft.
+                }
+                else if (job.ImportType == ImportType.Vehicle)
+                {
+                    var vehicleNumber = Get(mappedRow, "VehicleNumber")!;
+                    localVehicles.TryGetValue(NormalizeVehicleNumber(vehicleNumber), out var earlier);
+                    if (earlier != null && !earlier.IsUnpushed)
+                        throw new InvalidOperationException($"Vehicle Number '{vehicleNumber}' already exists.");
+
+                    // An unpushed copy from an earlier import is replaced in place (the
+                    // (ClientAccountId, VehicleNumber) index is unique), and its old import
+                    // record is retired so that job can never push the same vehicle again.
+                    var vehicle = earlier?.Vehicle ?? new Vehicle();
+                    if (earlier != null)
                     {
-                        VehicleNumber = Get(mappedRow, "VehicleNumber")!,
-                        VIN = Get(mappedRow, "VIN"),
-                        Make = Get(mappedRow, "Make"),
-                        Model = Get(mappedRow, "Model"),
-                        Year = TryInt(Get(mappedRow, "Year")),
-                        Color = Get(mappedRow, "Color"),
-                        FuelType = Get(mappedRow, "FuelType"),
-                        TankSize = TryDecimal(Get(mappedRow, "TankSize")),
-                        Odometer = TryDecimal(Get(mappedRow, "Odometer")),
-                        LicenseNumber = Get(mappedRow, "LicenseNumber"),
-                        SpotNumber = Get(mappedRow, "SpotNumber"),
-                        Transmission = Get(mappedRow, "Transmission"),
-                        VehicleType = Get(mappedRow, "VehicleType"),
-                        CreatedBy = performedBy,
-                        ImportJobId = job.Id,
-                        ImportRecordId = record.Id,
-                        ClientAccountId = job.ClientAccountId
-                    };
-                    _db.Vehicles.Add(vehicle);
+                        var oldRecord = await _db.ImportRecords.FirstAsync(r => r.Id == earlier.Vehicle.ImportRecordId);
+                        oldRecord.RpaStatus = RpaStatus.Skipped;
+                        oldRecord.RpaMessage = $"Replaced by job #{job.Id}, row {record.RowNumber}.";
+                        oldRecord.CreatedEntityId = null;
+                        vehicle.CreatedAt = DateTime.UtcNow;
+                    }
+
+                    vehicle.VehicleNumber = vehicleNumber;
+                    vehicle.VIN = Get(mappedRow, "VIN");
+                    vehicle.Make = Get(mappedRow, "Make");
+                    vehicle.Model = Get(mappedRow, "Model");
+                    vehicle.Year = TryInt(Get(mappedRow, "Year"));
+                    vehicle.Color = Get(mappedRow, "Color");
+                    vehicle.FuelType = Get(mappedRow, "FuelType");
+                    vehicle.TankSize = TryDecimal(Get(mappedRow, "TankSize"));
+                    vehicle.Odometer = TryDecimal(Get(mappedRow, "Odometer"));
+                    vehicle.LicenseNumber = Get(mappedRow, "LicenseNumber");
+                    vehicle.SpotNumber = Get(mappedRow, "SpotNumber");
+                    vehicle.Transmission = Get(mappedRow, "Transmission");
+                    vehicle.VehicleType = Get(mappedRow, "VehicleType");
+                    vehicle.CreatedBy = performedBy;
+                    vehicle.ImportJobId = job.Id;
+                    vehicle.ImportRecordId = record.Id;
+                    vehicle.ClientAccountId = job.ClientAccountId;
+
+                    if (earlier == null) _db.Vehicles.Add(vehicle);
                     await _db.SaveChangesAsync();
                     record.CreatedEntityId = vehicle.Id;
+
+                    // Later rows in this same file now see this vehicle as the current copy.
+                    localVehicles[NormalizeVehicleNumber(vehicleNumber)] = new LocalVehicle(vehicle, IsUnpushed: false);
                 }
                 else
                 {
@@ -454,6 +511,53 @@ public class ImportService : IImportService
     }
 
     // ---------- Helpers ----------
+
+    /// <param name="IsUnpushed">
+    /// True when this local copy came from an import that never got it into irentosoft (push
+    /// not attempted, failed, or already superseded) and no push is running for that job right
+    /// now - i.e. it is safe to replace with a fresh import. Vehicles not created by an import
+    /// are never considered unpushed.
+    /// </param>
+    private record LocalVehicle(Vehicle Vehicle, bool IsUnpushed)
+    {
+        public string Key => NormalizeVehicleNumber(Vehicle.VehicleNumber);
+    }
+
+    private async Task<List<LocalVehicle>> LoadLocalVehiclesAsync(int? clientAccountId)
+    {
+        var unpushedStatuses = new[] { RpaStatus.NotAttempted, RpaStatus.Failed, RpaStatus.Skipped };
+
+        return await _db.Vehicles
+            .Where(v => v.ClientAccountId == clientAccountId)
+            .Select(v => new LocalVehicle(v, _db.ImportRecords.Any(r =>
+                r.Id == v.ImportRecordId
+                && unpushedStatuses.Contains(r.RpaStatus)
+                && r.ImportJob!.Status != ImportJobStatus.RpaInProgress)))
+            .ToListAsync();
+    }
+
+    private static string NormalizeVehicleNumber(string vehicleNumber) => vehicleNumber.Trim().ToUpperInvariant();
+
+    /// <summary>Upper-cased ReservationNumber -> job id, for rows other jobs of this client account already pushed successfully.</summary>
+    private async Task<Dictionary<string, int>> LoadPushedReservationNumbersAsync(ImportJob job)
+    {
+        var pushed = await _db.ImportRecords
+            .Where(r => r.ImportJobId != job.Id
+                && r.RpaStatus == RpaStatus.Succeeded
+                && r.ImportJob!.ImportType == ImportType.Reservation
+                && r.ImportJob.ClientAccountId == job.ClientAccountId)
+            .Select(r => new { r.ImportJobId, r.MappedDataJson })
+            .ToListAsync();
+
+        var result = new Dictionary<string, int>();
+        foreach (var p in pushed)
+        {
+            var row = JsonSerializer.Deserialize<Dictionary<string, string?>>(p.MappedDataJson, JsonOptions);
+            var number = row == null ? null : Get(row, "ReservationNumber");
+            if (!string.IsNullOrWhiteSpace(number)) result[number.Trim().ToUpperInvariant()] = p.ImportJobId;
+        }
+        return result;
+    }
 
     private async Task LogAsync(int importJobId, string action, string performedBy, string details)
     {
